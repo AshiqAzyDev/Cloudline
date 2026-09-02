@@ -99,8 +99,6 @@ class Show extends Component
 
     public function render()
     {
-        $this->invoice->refresh()->load(['items', 'client', 'billingEntity', 'events.user', 'reminders', 'payments']);
-
         return view('livewire.invoices.show', [
             'payUrl' => route('pay.show', $this->invoice->pay_token),
         ]);

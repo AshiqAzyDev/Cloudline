@@ -30,6 +30,10 @@ class AcceptInvite extends Component
             abort(403, 'This account is inactive. Contact your administrator.');
         }
 
+        if ($user->isClient()) {
+            abort(403, 'The client portal is not available. Please use the payment link from your invoice email.');
+        }
+
         $this->userId = $user->id;
     }
 
@@ -51,6 +55,12 @@ class AcceptInvite extends Component
             return redirect()->route('login');
         }
 
+        if ($user->isClient()) {
+            session()->flash('error', 'The client portal is not available. Please use the payment link from your invoice email.');
+
+            return redirect()->route('login');
+        }
+
         $user->forceFill([
             'password' => $this->password,
             'email_verified_at' => now(),
@@ -60,9 +70,7 @@ class AcceptInvite extends Component
         Auth::login($user);
         session()->regenerate();
 
-        return $user->isClient()
-            ? redirect()->route('portal.dashboard')
-            : redirect()->route('dashboard');
+        return redirect()->route('dashboard');
     }
 
     public function render()

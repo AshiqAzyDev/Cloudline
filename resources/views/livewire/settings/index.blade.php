@@ -6,6 +6,8 @@
             'users' => ['Users', $canUsers],
             'reminders' => ['Reminders', $canSettings],
             'billing' => ['Defaults', $canSettings],
+            'branding' => ['Branding', $canSettings],
+            'currencies' => ['Currencies', $canSettings],
             'stripe' => ['Stripe', $canSettings],
             'emails' => ['Email templates', $canSettings],
         ] as $key => [$label, $allowed])
@@ -163,7 +165,7 @@
                 <label class="field-label">Default currency</label>
                 <select wire:model="default_currency" class="field max-w-xs">
                     @foreach ($currencies as $code => $meta)
-                        <option value="{{ $code }}">{{ $code }}</option>
+                        <option value="{{ $code }}">{{ $code }} — {{ $meta['name'] }}</option>
                     @endforeach
                 </select>
             </div>
@@ -172,6 +174,103 @@
                 <input wire:model="default_due_days" type="number" class="field w-20">
             </div>
             <button wire:click="saveDefaults" class="btn btn-primary">Save defaults</button>
+        </div>
+    @endif
+
+    @if ($tab === 'branding')
+        <div class="card card-pad mb-3">
+            <div class="section-label">App logo</div>
+            <p class="mb-3 text-[12.5px] text-subtle">Shown in the sidebar and on sign-in pages. PNG, JPG, SVG, or WebP up to 2 MB. Saves automatically when the upload finishes.</p>
+            @if ($logoUrl)
+                <div class="mb-3 flex items-center gap-3 rounded-md border border-line bg-canvas p-3">
+                    <img src="{{ $logoUrl }}" alt="Current logo" class="max-h-10 max-w-[160px] object-contain">
+                    <button type="button" wire:click="removeLogo" class="btn btn-ghost text-red-700">Remove</button>
+                </div>
+            @endif
+            <input type="file" wire:model="logoUpload" accept="image/png,image/jpeg,image/svg+xml,image/webp,.svg" class="field max-w-md">
+            @error('logoUpload') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
+            <div wire:loading wire:target="logoUpload" class="mt-2 text-[12px] text-subtle">Uploading logo…</div>
+        </div>
+        <div class="card card-pad mb-3">
+            <div class="section-label">Favicon</div>
+            <p class="mb-3 text-[12.5px] text-subtle">Browser tab icon. PNG, ICO, or SVG up to 512 KB. Square images work best. Saves automatically when the upload finishes.</p>
+            @if ($faviconUrl)
+                <div class="mb-3 flex items-center gap-3 rounded-md border border-line bg-canvas p-3">
+                    <img src="{{ $faviconUrl }}" alt="Current favicon" class="h-8 w-8 object-contain">
+                    <button type="button" wire:click="removeFavicon" class="btn btn-ghost text-red-700">Remove</button>
+                </div>
+            @endif
+            <input type="file" wire:model="faviconUpload" accept="image/png,image/x-icon,image/svg+xml,.ico" class="field max-w-md">
+            @error('faviconUpload') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
+            <div wire:loading wire:target="faviconUpload" class="mt-2 text-[12px] text-subtle">Uploading favicon…</div>
+        </div>
+        <button wire:click="saveBranding" wire:loading.attr="disabled" wire:target="logoUpload,faviconUpload,saveBranding" class="btn btn-primary">Save branding</button>
+    @endif
+
+    @if ($tab === 'currencies')
+        <div class="card card-pad mb-3">
+            <div class="section-label">Supported currencies</div>
+            <p class="mb-3 text-[12.5px] text-subtle">These appear on invoices, clients, services, and reports. Bank-only currencies skip Stripe card checkout. FX rate is indicative GBP per 1 unit of currency — leave blank to use the live API rate when configured.</p>
+            @if ($fxRatesConfigured)
+                <p class="mb-3 text-[12.5px] text-subtle">
+                    Live rates via ExchangeRate-API (base GBP).
+                    @if ($fxRatesUpdatedAt)
+                        Last fetched {{ $fxRatesUpdatedAt->diffForHumans() }} ({{ $fxRatesUpdatedAt->format('d M Y H:i') }}).
+                    @else
+                        Not fetched yet — click refresh below.
+                    @endif
+                </p>
+            @else
+                <p class="mb-3 text-[12.5px] text-subtle">Set <code>EXCHANGERATE_API_KEY</code> in <code>.env</code> to auto-fill FX rates, or enter them manually.</p>
+            @endif
+            @error('currencyRows') <p class="mb-2 text-sm text-red-600">{{ $message }}</p> @enderror
+            <div class="overflow-x-auto">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Code</th>
+                            <th>Name</th>
+                            <th>Symbol</th>
+                            <th>Decimals</th>
+                            <th>Bank only</th>
+                            <th>FX → GBP</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach ($currencyRows as $i => $row)
+                            @php $inUse = in_array(strtoupper($row['code']), $currenciesInUse, true); @endphp
+                            <tr wire:key="currency-row-{{ $i }}">
+                                <td><input wire:model="currencyRows.{{ $i }}.code" class="field w-16 uppercase" maxlength="3" placeholder="GBP"></td>
+                                <td><input wire:model="currencyRows.{{ $i }}.name" class="field" placeholder="British Pound"></td>
+                                <td><input wire:model="currencyRows.{{ $i }}.symbol" class="field w-16" placeholder="£"></td>
+                                <td>
+                                    <select wire:model="currencyRows.{{ $i }}.decimals" class="field w-20">
+                                        <option value="2">2</option>
+                                        <option value="0">0</option>
+                                    </select>
+                                </td>
+                                <td class="text-center"><input type="checkbox" wire:model="currencyRows.{{ $i }}.bank_only"></td>
+                                <td><input wire:model="currencyRows.{{ $i }}.fx_rate_to_gbp" class="field w-24" placeholder="1.0" @disabled(strtoupper($row['code']) === 'GBP')></td>
+                                <td>
+                                    @if ($inUse)
+                                        <span class="text-[11px] text-subtle">In use</span>
+                                    @else
+                                        <button type="button" wire:click="removeCurrencyRow({{ $i }})" class="btn btn-ghost text-red-700">Remove</button>
+                                    @endif
+                                </td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+                @if ($fxRatesConfigured)
+                    <button type="button" wire:click="refreshFxRates" class="btn btn-secondary">Refresh FX from API</button>
+                @endif
+                <button type="button" wire:click="addCurrencyRow" class="btn btn-ghost">+ Add currency</button>
+                <button wire:click="saveCurrencies" class="btn btn-primary">Save currencies</button>
+            </div>
         </div>
     @endif
 

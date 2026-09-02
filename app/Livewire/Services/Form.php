@@ -4,6 +4,7 @@ namespace App\Livewire\Services;
 
 use App\Models\BillingEntity;
 use App\Models\Service;
+use App\Support\CurrencyCatalog;
 use App\Support\Money;
 use App\Support\ValidationMessages;
 use Livewire\Attributes\Layout;
@@ -83,7 +84,7 @@ class Form extends Component
     {
         return view('livewire.services.form', [
             'entities' => BillingEntity::query()->orderBy('name')->get(),
-            'currencies' => config('billing.currencies'),
+            'currencies' => CurrencyCatalog::all(),
         ])->title($this->serviceId ? 'Edit service' : 'New service');
     }
 }

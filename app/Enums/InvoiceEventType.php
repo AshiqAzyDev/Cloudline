@@ -15,6 +15,7 @@ enum InvoiceEventType: string
     case Voided = 'voided';
     case Duplicated = 'duplicated';
     case Refunded = 'refunded';
+    case PaymentFailed = 'payment_failed';
 
     public function label(): string
     {
@@ -30,6 +31,7 @@ enum InvoiceEventType: string
             self::Voided => 'Voided',
             self::Duplicated => 'Duplicated',
             self::Refunded => 'Refunded',
+            self::PaymentFailed => 'Payment failed',
         };
     }
 }

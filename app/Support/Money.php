@@ -7,7 +7,8 @@ class Money
     public static function decimals(string $currency): int
     {
         $currency = strtoupper($currency);
-        $configured = config('billing.currencies.'.$currency.'.decimals');
+        $meta = CurrencyCatalog::all()[$currency] ?? null;
+        $configured = is_array($meta) ? ($meta['decimals'] ?? null) : null;
 
         if (is_int($configured)) {
             return $configured;
@@ -18,7 +19,14 @@ class Money
 
     public static function symbol(string $currency): string
     {
-        return config('billing.currencies.'.strtoupper($currency).'.symbol', strtoupper($currency).' ');
+        $currency = strtoupper($currency);
+        $meta = CurrencyCatalog::all()[$currency] ?? null;
+
+        if (is_array($meta) && isset($meta['symbol'])) {
+            return (string) $meta['symbol'];
+        }
+
+        return $currency.' ';
     }
 
     public static function toMinor(int|float|string $amount, string $currency): int

@@ -7,7 +7,7 @@ use App\Models\BillingEntity;
 use App\Models\Invoice;
 use App\Support\FinancialYear;
 use App\Support\Money;
-use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -23,53 +23,74 @@ class Dashboard extends Component
         $fyStart = FinancialYear::startFor(now());
         [$fyFrom, $fyTo] = FinancialYear::rangeForStartYear($fyStart->year);
 
-        $overdue = Invoice::query()
-            ->where('status', InvoiceStatus::Overdue)
-            ->get();
+        $overdueStats = $this->amountsByCurrency(
+            Invoice::query()->where('status', InvoiceStatus::Overdue),
+            'total_minor - amount_paid_minor',
+        );
 
-        $unpaid = Invoice::query()
-            ->whereIn('status', [
+        $unpaidStats = $this->amountsByCurrency(
+            Invoice::query()->whereIn('status', [
                 InvoiceStatus::Sent->value,
                 InvoiceStatus::Overdue->value,
                 InvoiceStatus::PartiallyPaid->value,
                 InvoiceStatus::AwaitingVerification->value,
-            ])
-            ->get();
+            ]),
+            'total_minor - amount_paid_minor',
+        );
 
-        $unsent = Invoice::query()
-            ->where('status', InvoiceStatus::Draft)
-            ->get();
+        $unsentStats = $this->amountsByCurrency(
+            Invoice::query()->where('status', InvoiceStatus::Draft),
+            'total_minor',
+        );
 
-        $paidThisMonth = Invoice::query()
-            ->where('status', InvoiceStatus::Paid)
-            ->whereMonth('paid_at', now()->month)
-            ->whereYear('paid_at', now()->year)
-            ->get();
+        $monthSalesStats = $this->amountsByCurrency(
+            Invoice::query()
+                ->where('status', InvoiceStatus::Paid)
+                ->whereMonth('paid_at', now()->month)
+                ->whereYear('paid_at', now()->year),
+            'total_minor',
+        );
 
-        $fyInvoices = Invoice::query()
+        $fyCount = Invoice::query()
             ->whereNotIn('status', [InvoiceStatus::Draft->value, InvoiceStatus::Void->value])
             ->whereBetween('issue_date', [$fyFrom->toDateString(), $fyTo->toDateString()])
-            ->get();
+            ->count();
 
-        $monthlyBars = [];
+        $monthExpression = match (DB::connection()->getDriverName()) {
+            'sqlite' => "strftime('%Y-%m', issue_date)",
+            'pgsql' => "to_char(issue_date, 'YYYY-MM')",
+            default => "DATE_FORMAT(issue_date, '%Y-%m')",
+        };
+
+        $monthlyStats = DB::table('invoices')
+            ->selectRaw("{$monthExpression} as month_key, SUM(CASE WHEN currency = 'GBP' THEN total_minor ELSE COALESCE(total_gbp_minor, 0) END) as amount, COUNT(*) as invoice_count")
+            ->whereNotIn('status', [InvoiceStatus::Draft->value, InvoiceStatus::Void->value])
+            ->whereBetween('issue_date', [$fyFrom->toDateString(), $fyTo->toDateString()])
+            ->groupBy('month_key')
+            ->get()
+            ->keyBy('month_key');
+
+        $bars = [];
         $cursor = $fyFrom->startOfMonth();
         while ($cursor->lte($fyTo)) {
-            $monthTotal = $fyInvoices
-                ->filter(fn (Invoice $invoice) => $invoice->issue_date->isSameMonth($cursor))
-                ->sum(fn (Invoice $invoice) => $invoice->currency === 'GBP'
-                    ? $invoice->total_minor
-                    : ($invoice->total_gbp_minor ?? 0));
-            $monthlyBars[] = [
+            $key = $cursor->format('Y-m');
+            $stat = $monthlyStats->get($key);
+            $amount = (int) ($stat->amount ?? 0);
+            $count = (int) ($stat->invoice_count ?? 0);
+            $bars[] = [
                 'label' => $cursor->format('M'),
-                'amount' => (int) $monthTotal,
+                'month' => $cursor->format('F Y'),
+                'amount' => $amount,
+                'count' => $count,
+                'formatted' => Money::format($amount, 'GBP'),
             ];
             $cursor = $cursor->addMonth();
         }
 
-        $fyGbpTotal = (int) collect($monthlyBars)->sum('amount');
-        $monthsElapsed = max(1, collect($monthlyBars)->filter(fn ($row) => $row['amount'] > 0)->count() ?: 1);
+        $fyGbpTotal = (int) collect($bars)->sum('amount');
+        $monthsElapsed = max(1, collect($bars)->filter(fn ($row) => $row['amount'] > 0)->count() ?: 1);
         $monthlyAverage = (int) round($fyGbpTotal / $monthsElapsed);
-        $maxBar = max(1, collect($monthlyBars)->max('amount') ?: 1);
+        $maxBar = max(1, collect($bars)->max('amount') ?: 1);
 
         $recent = Invoice::query()
             ->with(['client', 'billingEntity', 'items'])
@@ -80,20 +101,20 @@ class Dashboard extends Component
         $entityNames = BillingEntity::query()->where('is_active', true)->orderBy('name')->pluck('name');
 
         return view('livewire.dashboard', [
-            'overdueCount' => $overdue->count(),
-            'overdueAmount' => $this->formatAmounts($overdue, fn (Invoice $i) => $i->outstandingMinor()),
-            'unpaidCount' => $unpaid->count(),
-            'unpaidAmount' => $this->formatAmounts($unpaid, fn (Invoice $i) => $i->outstandingMinor()),
-            'unsentCount' => $unsent->count(),
-            'unsentAmount' => $this->formatAmounts($unsent, fn (Invoice $i) => $i->total_minor),
+            'overdueCount' => array_sum(array_column($overdueStats, 'count')),
+            'overdueAmount' => $this->formatStats($overdueStats),
+            'unpaidCount' => array_sum(array_column($unpaidStats, 'count')),
+            'unpaidAmount' => $this->formatStats($unpaidStats),
+            'unsentCount' => array_sum(array_column($unsentStats, 'count')),
+            'unsentAmount' => $this->formatStats($unsentStats),
             'monthLabel' => now()->format('F').' sales',
-            'monthSales' => $this->formatAmounts($paidThisMonth, fn (Invoice $i) => $i->total_minor),
-            'fyLabel' => 'Tax year sales '.$fyStart->year,
-            'fyCount' => $fyInvoices->count(),
+            'monthSales' => $this->formatStats($monthSalesStats),
+            'fyLabel' => FinancialYear::label($fyStart->year).' sales',
+            'fyCount' => $fyCount,
             'fySales' => Money::format($fyGbpTotal, 'GBP'),
             'fyAverage' => Money::format($monthlyAverage, 'GBP'),
             'fyAverageMinor' => $monthlyAverage,
-            'monthlyBars' => $monthlyBars,
+            'monthlyBars' => $bars,
             'maxBar' => $maxBar,
             'invoices' => $recent,
             'entitySubtitle' => $entityNames->implode(' · ') ?: 'Billing',
@@ -101,15 +122,34 @@ class Dashboard extends Component
     }
 
     /**
-     * @param  Collection<int, Invoice>  $invoices
-     * @param  callable(Invoice): int  $amount
+     * @return list<array{currency: string, amount: int, count: int}>
      */
-    private function formatAmounts($invoices, callable $amount): string
+    private function amountsByCurrency($query, string $amountExpression): array
     {
-        $byCurrency = $invoices->groupBy('currency')->map(
-            fn ($group, $currency) => Money::format($group->sum($amount), $currency)
-        );
+        return $query
+            ->selectRaw('currency, SUM('.$amountExpression.') as amount, COUNT(*) as count')
+            ->groupBy('currency')
+            ->orderBy('currency')
+            ->get()
+            ->map(fn ($row) => [
+                'currency' => $row->currency,
+                'amount' => (int) $row->amount,
+                'count' => (int) $row->count,
+            ])
+            ->all();
+    }
 
-        return $byCurrency->implode(' · ') ?: Money::format(0, 'GBP');
+    /**
+     * @param  list<array{currency: string, amount: int, count: int}>  $stats
+     */
+    private function formatStats(array $stats): string
+    {
+        if ($stats === []) {
+            return Money::format(0, 'GBP');
+        }
+
+        return collect($stats)
+            ->map(fn (array $row) => Money::format($row['amount'], $row['currency']))
+            ->implode(' · ');
     }
 }

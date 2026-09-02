@@ -26,4 +26,11 @@ class MoneyTest extends TestCase
         $this->assertSame(1500, Money::toMinor('1500', 'JPY'));
         $this->assertSame('¥1,500', Money::format(1500, 'JPY'));
     }
+
+    public function test_unknown_currency_falls_back_without_error(): void
+    {
+        $this->assertSame(2, Money::decimals('XYZ'));
+        $this->assertSame('XYZ ', Money::symbol('XYZ'));
+        $this->assertSame('XYZ 10.00', Money::format(1000, 'XYZ'));
+    }
 }

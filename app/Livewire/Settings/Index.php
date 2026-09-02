@@ -5,7 +5,10 @@ namespace App\Livewire\Settings;
 use App\Models\BillingEntity;
 use App\Models\Setting;
 use App\Models\User;
+use App\Services\ExchangeRateService;
 use App\Services\StripeCheckoutService;
+use App\Support\Branding;
+use App\Support\CurrencyCatalog;
 use App\Support\Permissions;
 use App\Support\ValidationMessages;
 use Illuminate\Support\Str;
@@ -14,12 +17,16 @@ use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
+use Livewire\WithFileUploads;
 use Spatie\Permission\Models\Role;
 
 #[Layout('layouts.app')]
 #[Title('Settings')]
 class Index extends Component
 {
+    use WithFileUploads;
+
     #[Url]
     public string $tab = 'entities';
 
@@ -56,6 +63,15 @@ class Index extends Component
     public string $reminder_subject = '';
 
     public string $reminder_body = '';
+
+    /** @var list<array{code: string, name: string, symbol: string, decimals: string, bank_only: bool, fx_rate_to_gbp: string}> */
+    public array $currencyRows = [];
+
+    /** @var TemporaryUploadedFile|null */
+    public $logoUpload = null;
+
+    /** @var TemporaryUploadedFile|null */
+    public $faviconUpload = null;
 
     public function mount(): void
     {
@@ -119,6 +135,7 @@ class Index extends Component
         $this->invoice_sent_body = (string) Setting::getValue('email.invoice_sent.body', '');
         $this->reminder_subject = (string) Setting::getValue('email.reminder.subject', '');
         $this->reminder_body = (string) Setting::getValue('email.reminder.body', '');
+        $this->currencyRows = CurrencyCatalog::rows();
     }
 
     public function saveEntities(): void
@@ -398,6 +415,251 @@ class Index extends Component
         session()->flash('success', 'Defaults saved.');
     }
 
+    public function addCurrencyRow(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        $this->currencyRows[] = [
+            'code' => '',
+            'name' => '',
+            'symbol' => '',
+            'decimals' => '2',
+            'bank_only' => false,
+            'fx_rate_to_gbp' => '',
+        ];
+    }
+
+    public function removeCurrencyRow(int $index): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        if (count($this->currencyRows) <= 1) {
+            $this->addError('currencyRows', 'At least one currency is required.');
+
+            return;
+        }
+
+        $code = strtoupper((string) ($this->currencyRows[$index]['code'] ?? ''));
+
+        if ($code !== '' && in_array($code, CurrencyCatalog::inUse(), true)) {
+            $this->addError('currencyRows', "Cannot remove {$code} — it is used by invoices, clients, or entities.");
+
+            return;
+        }
+
+        unset($this->currencyRows[$index]);
+        $this->currencyRows = array_values($this->currencyRows);
+    }
+
+    public function saveCurrencies(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        $needsApiRates = collect($this->currencyRows)->contains(function (array $row): bool {
+            $code = strtoupper((string) ($row['code'] ?? ''));
+
+            return $code !== '' && $code !== 'GBP' && trim((string) ($row['fx_rate_to_gbp'] ?? '')) === '';
+        });
+
+        if ($needsApiRates) {
+            try {
+                app(ExchangeRateService::class)->ensureFresh();
+            } catch (\Throwable $e) {
+                $this->addError('currencyRows', 'Could not refresh exchange rates: '.$e->getMessage());
+
+                return;
+            }
+        }
+
+        $this->validate([
+            'currencyRows' => 'required|array|min:1',
+            'currencyRows.*.code' => 'required|string|size:3|alpha|distinct',
+            'currencyRows.*.name' => 'required|string|max:100',
+            'currencyRows.*.symbol' => 'required|string|max:8',
+            'currencyRows.*.decimals' => 'required|integer|in:0,2',
+            'currencyRows.*.bank_only' => 'boolean',
+            'currencyRows.*.fx_rate_to_gbp' => 'nullable|numeric|min:0',
+        ], [
+            'currencyRows.required' => 'Add at least one currency.',
+            'currencyRows.*.code.required' => 'Each currency needs a 3-letter code.',
+            'currencyRows.*.code.distinct' => 'Currency codes must be unique.',
+            'currencyRows.*.name.required' => 'Each currency needs a name.',
+            'currencyRows.*.symbol.required' => 'Each currency needs a symbol.',
+        ]);
+
+        $codes = collect($this->currencyRows)->pluck('code')->map(fn ($c) => strtoupper((string) $c));
+        $inUse = CurrencyCatalog::inUse();
+        $removed = array_diff($inUse, $codes->all());
+
+        if ($removed !== []) {
+            $this->addError('currencyRows', 'Cannot remove '.implode(', ', $removed).' — still in use on invoices, clients, or entities.');
+
+            return;
+        }
+
+        $defaultCurrency = strtoupper((string) Setting::getValue('default_currency', config('billing.default_currency')));
+        if (! $codes->contains($defaultCurrency)) {
+            Setting::setValue('default_currency', $codes->first());
+        }
+
+        foreach ($this->currencyRows as $index => $row) {
+            $code = strtoupper((string) ($row['code'] ?? ''));
+
+            if ($code === '' || $code === 'GBP' || trim((string) ($row['fx_rate_to_gbp'] ?? '')) !== '') {
+                continue;
+            }
+
+            $rate = app(ExchangeRateService::class)->rateToGbp($code);
+
+            if ($rate !== null) {
+                $this->currencyRows[$index]['fx_rate_to_gbp'] = rtrim(
+                    rtrim(number_format($rate, 8, '.', ''), '0'),
+                    '.',
+                );
+            }
+        }
+
+        CurrencyCatalog::saveRows($this->currencyRows);
+        $this->currencyRows = CurrencyCatalog::rows();
+        session()->flash('success', 'Currencies saved.');
+    }
+
+    public function refreshFxRates(ExchangeRateService $exchangeRates): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        if (! $exchangeRates->isConfigured()) {
+            $this->addError('currencyRows', 'Add EXCHANGERATE_API_KEY to your .env file first.');
+
+            return;
+        }
+
+        try {
+            $rates = $exchangeRates->refresh();
+        } catch (\Throwable $e) {
+            $this->addError('currencyRows', $e->getMessage());
+
+            return;
+        }
+
+        foreach ($this->currencyRows as $index => $row) {
+            $code = strtoupper((string) ($row['code'] ?? ''));
+
+            if ($code === '' || $code === 'GBP' || trim((string) ($row['fx_rate_to_gbp'] ?? '')) !== '') {
+                continue;
+            }
+
+            if (isset($rates[$code])) {
+                $this->currencyRows[$index]['fx_rate_to_gbp'] = rtrim(
+                    rtrim(number_format($rates[$code], 8, '.', ''), '0'),
+                    '.',
+                );
+            }
+        }
+
+        session()->flash('success', 'Exchange rates refreshed from API. Review and save currencies to persist manual overrides.');
+    }
+
+    public function updatedLogoUpload(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        if (! $this->logoUpload) {
+            return;
+        }
+
+        $this->persistLogoUpload();
+        session()->flash('success', 'Logo saved.');
+    }
+
+    public function updatedFaviconUpload(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        if (! $this->faviconUpload) {
+            return;
+        }
+
+        $this->persistFaviconUpload();
+        session()->flash('success', 'Favicon saved.');
+    }
+
+    public function saveBranding(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        $saved = false;
+
+        if ($this->logoUpload) {
+            $this->persistLogoUpload();
+            $saved = true;
+        }
+
+        if ($this->faviconUpload) {
+            $this->persistFaviconUpload();
+            $saved = true;
+        }
+
+        if (! $saved) {
+            $this->addError('logoUpload', 'Choose a logo or favicon file first. Files also save automatically once the upload finishes.');
+
+            return;
+        }
+
+        session()->flash('success', 'Branding saved.');
+    }
+
+    private function persistLogoUpload(): void
+    {
+        $this->validateOnly('logoUpload', [
+            'logoUpload' => 'required|file|mimes:png,jpg,jpeg,svg,webp|max:2048',
+        ], $this->brandingValidationMessages());
+
+        Branding::setLogoPath($this->logoUpload->store('branding', 'public'));
+        $this->logoUpload = null;
+    }
+
+    private function persistFaviconUpload(): void
+    {
+        $this->validateOnly('faviconUpload', [
+            'faviconUpload' => 'required|file|mimes:png,ico,svg|max:512',
+        ], $this->brandingValidationMessages());
+
+        Branding::setFaviconPath($this->faviconUpload->store('branding', 'public'));
+        $this->faviconUpload = null;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function brandingValidationMessages(): array
+    {
+        return [
+            'logoUpload.mimes' => 'Logo must be PNG, JPG, SVG, or WebP.',
+            'logoUpload.max' => 'Logo must be 2 MB or smaller.',
+            'faviconUpload.mimes' => 'Favicon must be PNG, ICO, or SVG.',
+            'faviconUpload.max' => 'Favicon must be 512 KB or smaller.',
+        ];
+    }
+
+    public function removeLogo(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        Branding::removeLogo();
+        $this->logoUpload = null;
+        session()->flash('success', 'Logo removed.');
+    }
+
+    public function removeFavicon(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        Branding::removeFavicon();
+        $this->faviconUpload = null;
+        session()->flash('success', 'Favicon removed.');
+    }
+
     public function saveEmails(): void
     {
         abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
@@ -431,13 +693,13 @@ class Index extends Component
             abort_unless($canUsers || $canSettings, 403);
         }
 
-        if (in_array($value, ['entities', 'reminders', 'billing', 'stripe', 'emails'], true) && ! $canSettings) {
+        if (in_array($value, ['entities', 'reminders', 'billing', 'branding', 'currencies', 'stripe', 'emails'], true) && ! $canSettings) {
             $this->tab = $canUsers ? 'users' : 'entities';
             abort_unless($canSettings || $canUsers, 403);
         }
     }
 
-    public function render(StripeCheckoutService $stripe)
+    public function render(StripeCheckoutService $stripe, ExchangeRateService $exchangeRates)
     {
         $canSettings = auth()->user()->can(Permissions::SETTINGS_MANAGE);
         $canUsers = auth()->user()->can(Permissions::USERS_MANAGE);
@@ -452,7 +714,12 @@ class Index extends Component
             'permissions' => Permissions::labels(),
             'stripeConfigured' => $stripe->isConfigured(),
             'lastWebhook' => $stripe->lastWebhookAt(),
-            'currencies' => config('billing.currencies'),
+            'currencies' => CurrencyCatalog::all(),
+            'currenciesInUse' => CurrencyCatalog::inUse(),
+            'fxRatesConfigured' => $exchangeRates->isConfigured(),
+            'fxRatesUpdatedAt' => $exchangeRates->lastUpdatedAt(),
+            'logoUrl' => Branding::logoUrl(),
+            'faviconUrl' => Branding::faviconUrl(),
             'canSettings' => $canSettings,
             'canUsers' => $canUsers,
         ]);

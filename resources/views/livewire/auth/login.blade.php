@@ -2,10 +2,12 @@
     <section class="landing-hero relative flex flex-col justify-between px-8 py-8 md:px-12 md:py-10">
         <div class="landing-glow" aria-hidden="true"></div>
         <div class="relative z-10 animate-rise">
-            <div class="flex items-center gap-2.5">
-                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-[15px] font-bold text-white shadow-[0_8px_24px_rgba(15,118,110,0.35)]">C</div>
-                <div class="text-[1.35rem] font-display font-semibold tracking-tight text-white">Cloudline</div>
-            </div>
+            <x-app-logo
+                markClass="flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-[15px] font-bold text-white shadow-[0_8px_24px_rgba(15,118,110,0.35)]"
+                textClass="text-[1.35rem] font-display font-semibold tracking-tight text-white"
+                imgClass="h-9 max-w-[200px] object-contain object-left"
+                class="gap-2.5"
+            />
         </div>
 
         <div class="relative z-10 mx-auto w-full max-w-xl py-10 md:py-0">
@@ -45,10 +47,11 @@
     <section class="landing-panel">
         <div class="mx-auto w-full max-w-[380px] animate-rise">
             <div class="mb-6 md:hidden">
-                <div class="flex items-center gap-2">
-                    <div class="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-[12px] font-bold text-white">C</div>
-                    <div class="font-display text-lg font-semibold">Cloudline</div>
-                </div>
+                <x-app-logo
+                    markClass="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-[12px] font-bold text-white"
+                    textClass="font-display text-lg font-semibold"
+                    imgClass="h-7 max-w-[160px] object-contain object-left"
+                />
             </div>
 
             <div class="rounded-xl border border-line bg-white p-6 shadow-[0_16px_40px_rgba(21,23,28,0.06)]">

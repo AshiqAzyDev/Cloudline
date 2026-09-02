@@ -21,8 +21,6 @@ class Show extends Component
 
     public function render()
     {
-        $this->client->refresh()->load(['invoices.billingEntity', 'users']);
-
         return view('livewire.clients.show');
     }
 }

@@ -2,7 +2,9 @@
 
 namespace App\Providers;
 
+use App\Models\BillingEntity;
 use App\Models\User;
+use App\Observers\BillingEntityObserver;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -33,5 +35,7 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('login', function (Request $request) {
             return Limit::perMinute(5)->by($request->ip().'|'.$request->input('email'));
         });
+
+        BillingEntity::observe(BillingEntityObserver::class);
     }
 }

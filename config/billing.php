@@ -30,4 +30,24 @@ return [
      */
     'bank_only_currencies' => ['INR'],
 
+    /**
+     * Indicative FX rates: 1 unit of foreign currency equals this many GBP.
+     * Used for dashboard/report GBP estimates before Stripe settlement.
+     *
+     * @var array<string, float>
+     */
+    'fx_rates_to_gbp' => [
+        'EUR' => 0.85,
+        'USD' => 0.79,
+        'INR' => 0.0095,
+        'AUD' => 0.52,
+        'CAD' => 0.58,
+    ],
+
+    'exchangerate_api' => [
+        'key' => env('EXCHANGERATE_API_KEY'),
+        'base' => env('EXCHANGERATE_API_BASE', 'GBP'),
+        'verify_ssl' => filter_var(env('EXCHANGERATE_API_VERIFY_SSL', true), FILTER_VALIDATE_BOOL),
+    ],
+
 ];

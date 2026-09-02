@@ -12,6 +12,7 @@ use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Reminder;
 use App\Models\User;
+use App\Support\BillingDefaults;
 use App\Support\Money;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
@@ -23,6 +24,7 @@ class InvoiceService
         private InvoiceNumberingService $numbering,
         private StripeCheckoutService $stripe,
         private ReminderService $reminders,
+        private ExchangeRateService $exchangeRates,
     ) {}
 
     /**
@@ -30,7 +32,7 @@ class InvoiceService
      */
     public function save(array $attributes, array $items, ?Invoice $invoice = null, ?User $user = null): Invoice
     {
-        return DB::transaction(function () use ($attributes, $items, $invoice, $user) {
+        $invoice = DB::transaction(function () use ($attributes, $items, $invoice, $user) {
             $wasSent = $invoice && $invoice->status !== InvoiceStatus::Draft;
             $before = $invoice?->only(['client_id', 'currency', 'due_date', 'total_minor', 'notes']);
 
@@ -100,6 +102,13 @@ class InvoiceService
 
             return $invoice->refresh()->load(['items', 'client', 'billingEntity']);
         });
+
+        if ($invoice->currency !== 'GBP' && $invoice->status !== InvoiceStatus::Paid) {
+            $this->syncIndicativeGbp($invoice);
+            $invoice->refresh()->load(['items', 'client', 'billingEntity']);
+        }
+
+        return $invoice;
     }
 
     /**
@@ -156,6 +165,8 @@ class InvoiceService
             $this->reminders->scheduleFor($invoice);
         }
 
+        $this->syncIndicativeGbp($invoice);
+
         $invoice->recordEvent(InvoiceEventType::Sent, [], $user);
 
         Mail::to($invoice->client->email)->queue(new InvoiceSentMail($invoice));
@@ -186,7 +197,7 @@ class InvoiceService
             $invoice->sent_at = $invoice->sent_at ?? now();
         }
 
-        $amount = max($invoice->outstandingMinor(), $invoice->total_minor > 0 ? $invoice->outstandingMinor() : 0);
+        $amount = $invoice->outstandingMinor();
 
         if ($invoice->total_minor === 0) {
             $invoice->status = InvoiceStatus::Paid;
@@ -233,8 +244,10 @@ class InvoiceService
     public function applyPayment(Invoice $invoice, array $payment, InvoiceEventType $event, ?User $user = null): Payment
     {
         return DB::transaction(function () use ($invoice, $payment, $event, $user) {
+            $invoice = Invoice::query()->whereKey($invoice->id)->lockForUpdate()->firstOrFail();
+
             if (! empty($payment['stripe_payment_intent_id'])) {
-                $existing = $invoice->payments()
+                $existing = Payment::query()
                     ->where('stripe_payment_intent_id', $payment['stripe_payment_intent_id'])
                     ->first();
 
@@ -253,7 +266,7 @@ class InvoiceService
                 $this->reminders->cancelPending($invoice);
                 $this->stripe->expireSession($invoice->stripe_checkout_session_id);
                 $invoice->stripe_checkout_session_id = null;
-            } else {
+            } elseif ($invoice->amount_paid_minor > 0) {
                 $invoice->status = InvoiceStatus::PartiallyPaid;
             }
 
@@ -265,6 +278,86 @@ class InvoiceService
 
             return $record;
         });
+    }
+
+    public function applyRefund(Invoice $invoice, int $refundedMinor, bool $fullyRefunded, ?string $chargeId = null): Invoice
+    {
+        return DB::transaction(function () use ($invoice, $refundedMinor, $fullyRefunded, $chargeId) {
+            $invoice = Invoice::query()->whereKey($invoice->id)->lockForUpdate()->firstOrFail();
+
+            $refundQuery = $invoice->payments()->where('method', 'refund');
+
+            if ($chargeId) {
+                $refundQuery->where('stripe_charge_id', $chargeId);
+            }
+
+            $alreadyRefundedMinor = (int) $refundQuery->sum('amount_minor');
+            $targetRefundMinor = -abs($refundedMinor);
+            $deltaMinor = $targetRefundMinor - $alreadyRefundedMinor;
+
+            if ($deltaMinor === 0) {
+                return $invoice->refresh();
+            }
+
+            $invoice->payments()->create([
+                'amount_minor' => $deltaMinor,
+                'currency' => $invoice->currency,
+                'fee_minor' => 0,
+                'net_minor' => $deltaMinor,
+                'method' => 'refund',
+                'received_at' => now(),
+                'stripe_charge_id' => $chargeId,
+            ]);
+
+            $invoice->amount_paid_minor = max(0, (int) $invoice->payments()->sum('amount_minor'));
+
+            if ($fullyRefunded) {
+                $invoice->status = InvoiceStatus::Refunded;
+                $invoice->paid_at = null;
+                $this->reminders->cancelPending($invoice);
+            } elseif ($invoice->amount_paid_minor >= $invoice->total_minor) {
+                $invoice->status = InvoiceStatus::Paid;
+            } elseif ($invoice->amount_paid_minor > 0) {
+                $invoice->status = InvoiceStatus::PartiallyPaid;
+            } else {
+                $invoice->status = InvoiceStatus::Sent;
+                $invoice->paid_at = null;
+            }
+
+            $invoice->save();
+            $invoice->recordEvent(InvoiceEventType::Refunded, [
+                'charge' => $chargeId,
+                'amount_refunded' => $refundedMinor,
+                'refund_delta_minor' => $deltaMinor,
+                'fully_refunded' => $fullyRefunded,
+            ]);
+
+            return $invoice->refresh();
+        });
+    }
+
+    public function syncIndicativeGbp(Invoice $invoice): void
+    {
+        if ($invoice->currency !== 'GBP') {
+            $this->exchangeRates->ensureFresh();
+        }
+
+        if ($invoice->currency === 'GBP') {
+            $invoice->forceFill([
+                'fx_rate_to_gbp' => 1,
+                'total_gbp_minor' => $invoice->total_minor,
+            ])->save();
+
+            return;
+        }
+
+        $rate = BillingDefaults::fxRateToGbp($invoice->currency);
+        $indicative = BillingDefaults::indicativeGbpMinor($invoice->total_minor, $invoice->currency);
+
+        $invoice->forceFill([
+            'fx_rate_to_gbp' => $rate,
+            'total_gbp_minor' => $indicative,
+        ])->save();
     }
 
     public function void(Invoice $invoice, ?User $user = null): Invoice
@@ -301,7 +394,7 @@ class InvoiceService
         $copy->pay_token = null;
         $copy->revision = 1;
         $copy->issue_date = now()->toDateString();
-        $copy->due_date = now()->addDays($invoice->billingEntity->default_due_days ?? 14)->toDateString();
+        $copy->due_date = now()->addDays(BillingDefaults::dueDays($invoice->billingEntity))->toDateString();
         $copy->created_by = $user?->id;
         $copy->save();
 
@@ -311,7 +404,7 @@ class InvoiceService
             ]));
         }
 
-        $copy->recordEvent(InvoiceEventType::Created, ['duplicated_from' => $invoice->id], $user);
+        $copy->recordEvent(InvoiceEventType::Duplicated, ['duplicated_from' => $invoice->id], $user);
 
         return $copy;
     }

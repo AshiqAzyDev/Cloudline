@@ -25,7 +25,9 @@ class ReportService
      *     currency?: string|null,
      *     search?: string|null,
      *     net?: bool,
-     *     include_drafts?: bool
+     *     include_drafts?: bool,
+     *     page?: int|null,
+     *     per_page?: int|null
      * }  $filters
      * @return array<string, mixed>
      */
@@ -35,10 +37,26 @@ class ReportService
         [$from, $to, $label] = $this->resolvePeriod($filters);
 
         $invoiceQuery = $this->invoiceQuery($filters, $from, $to);
+        $page = max(1, (int) ($filters['page'] ?? 1));
+        $perPage = max(1, min(100, (int) ($filters['per_page'] ?? 25)));
+        $paginateTable = array_key_exists('page', $filters);
+
         $invoices = (clone $invoiceQuery)
             ->with(['client', 'billingEntity', 'items.service', 'payments'])
             ->latest('issue_date')
             ->get();
+
+        if ($paginateTable) {
+            $tableInvoices = (clone $invoiceQuery)
+                ->with(['client', 'billingEntity'])
+                ->latest('issue_date')
+                ->forPage($page, $perPage)
+                ->get();
+            $invoiceTotal = (clone $invoiceQuery)->count();
+        } else {
+            $tableInvoices = $invoices;
+            $invoiceTotal = $invoices->count();
+        }
 
         $invoiceIds = $invoices->pluck('id');
 
@@ -63,7 +81,10 @@ class ReportService
             'net_of_fees' => $netOfFees,
             'filters' => $filters,
             'invoices' => $invoices,
-            'invoice_rows' => $this->invoiceRows($invoices),
+            'invoice_rows' => $this->invoiceRows($tableInvoices),
+            'invoice_total' => $invoiceTotal,
+            'invoice_page' => $paginateTable ? $page : 1,
+            'invoice_per_page' => $paginateTable ? $perPage : max(1, $invoiceTotal),
             'by_currency' => $this->byCurrency($invoices, $payments, $open, $netOfFees),
             'monthly' => $this->monthly($invoices, $payments, $from, $to, $netOfFees),
             'by_entity' => $this->groupSum($invoices, $payments, $netOfFees, fn (Invoice $invoice) => $invoice->billingEntity->name),

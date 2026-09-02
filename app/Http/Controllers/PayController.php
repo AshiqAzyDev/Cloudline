@@ -12,14 +12,14 @@ use Illuminate\Validation\ValidationException;
 
 class PayController extends Controller
 {
-    public function show(string $token, StripeCheckoutService $stripe)
+    public function show(string $token, StripeCheckoutService $stripe, Request $request)
     {
         $invoice = Invoice::query()
             ->with(['items', 'client', 'billingEntity'])
             ->where('pay_token', $token)
             ->firstOrFail();
 
-        $invoice->recordEvent(InvoiceEventType::Viewed);
+        $this->recordViewOnce($invoice, $request);
 
         $clientSecret = null;
         $checkoutError = null;
@@ -75,10 +75,10 @@ class PayController extends Controller
             try {
                 $session = $stripe->retrieveSession($request->string('session_id'));
                 if ($session->payment_status === 'paid' && $invoice->isPayable()) {
-                    $invoice->refresh();
+                    $stripe->settleCheckoutSession($session);
                 }
             } catch (\Throwable) {
-                // Ignore — webhook will still settle the invoice.
+                // Ignore — webhook may still settle the invoice.
             }
         }
 
@@ -99,5 +99,17 @@ class PayController extends Controller
             ->firstOrFail();
 
         return $pdf->download($invoice);
+    }
+
+    private function recordViewOnce(Invoice $invoice, Request $request): void
+    {
+        $key = 'pay_viewed_'.$invoice->id;
+
+        if ($request->session()->has($key)) {
+            return;
+        }
+
+        $invoice->recordEvent(InvoiceEventType::Viewed);
+        $request->session()->put($key, true);
     }
 }

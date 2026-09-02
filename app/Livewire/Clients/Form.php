@@ -4,6 +4,7 @@ namespace App\Livewire\Clients;
 
 use App\Enums\VatTreatment;
 use App\Models\Client;
+use App\Support\CurrencyCatalog;
 use App\Support\ValidationMessages;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
@@ -93,7 +94,7 @@ class Form extends Component
     public function render()
     {
         return view('livewire.clients.form', [
-            'currencies' => config('billing.currencies'),
+            'currencies' => CurrencyCatalog::all(),
             'treatments' => VatTreatment::cases(),
         ])->title($this->clientId ? 'Edit client' : 'New client');
     }

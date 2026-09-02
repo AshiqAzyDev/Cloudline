@@ -6,18 +6,23 @@ use App\Enums\InvoiceStatus;
 use App\Models\BillingEntity;
 use App\Models\Client;
 use App\Services\ReportService;
+use App\Support\CurrencyCatalog;
 use App\Support\FinancialYear;
 use App\Support\Money;
 use App\Support\Permissions;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
 use Livewire\Component;
+use Livewire\WithPagination;
 
 #[Layout('layouts.app')]
 #[Title('Reports')]
 class Index extends Component
 {
+    use WithPagination;
+
     #[Url]
     public int $fy = 0;
 
@@ -60,6 +65,14 @@ class Index extends Component
     {
         $this->date_from = '';
         $this->date_to = '';
+        $this->resetPage();
+    }
+
+    public function updated($property): void
+    {
+        if (in_array($property, ['date_from', 'date_to', 'entity_id', 'client_id', 'status', 'currency', 'search', 'net', 'include_drafts'], true)) {
+            $this->resetPage();
+        }
     }
 
     public function clearFilters(): void
@@ -92,6 +105,8 @@ class Index extends Component
             'search' => $this->search !== '' ? $this->search : null,
             'net' => $this->net,
             'include_drafts' => $this->include_drafts,
+            'page' => $this->getPage(),
+            'per_page' => 25,
         ];
     }
 
@@ -115,17 +130,26 @@ class Index extends Component
     {
         $data = $reports->build($this->filters());
 
+        $invoicePaginator = new LengthAwarePaginator(
+            $data['invoice_rows'],
+            $data['invoice_total'],
+            $data['invoice_per_page'],
+            $data['invoice_page'],
+        );
+
         return view('livewire.reports.index', [
             'data' => $data,
             'years' => $reports->availableFinancialYears(selected: $this->fy),
             'entities' => BillingEntity::query()->orderBy('name')->get(),
             'clients' => Client::query()->orderBy('company')->get(),
             'statuses' => InvoiceStatus::cases(),
-            'currencies' => array_keys(config('billing.currencies')),
+            'currencies' => CurrencyCatalog::codes(),
             'gbpInvoiced' => Money::format((int) $data['gbp_indicative_invoiced'], 'GBP'),
             'gbpReceived' => Money::format((int) $data['gbp_received'], 'GBP'),
             'exportUrl' => $this->exportUrl(),
-            'resultCount' => count($data['invoice_rows']),
+            'resultCount' => $data['invoice_total'],
+            'tableCount' => count($data['invoice_rows']),
+            'invoicePaginator' => $invoicePaginator,
         ]);
     }
 }

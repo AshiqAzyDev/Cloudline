@@ -9,6 +9,8 @@ use App\Models\Client;
 use App\Models\Invoice;
 use App\Models\Service;
 use App\Services\InvoiceService;
+use App\Support\BillingDefaults;
+use App\Support\CurrencyCatalog;
 use App\Support\Money;
 use App\Support\ValidationMessages;
 use Carbon\Carbon;
@@ -59,15 +61,15 @@ class Form extends Component
         $this->authorize($invoice?->exists ? 'update' : 'create', $invoice?->exists ? $invoice : Invoice::class);
 
         $this->issue_date = now()->toDateString();
-        $this->due_date = now()->addDays((int) config('billing.default_due_days', 14))->toDateString();
         $entity = BillingEntity::query()->where('is_active', true)->orderBy('id')->first();
         $this->billing_entity_id = $entity?->id;
         $this->terms = $entity?->terms ?? '';
+        $this->currency = BillingDefaults::currency($entity);
+        $this->due_date = now()->addDays(BillingDefaults::dueDays($entity))->toDateString();
         if ($entity) {
             $this->applyEntityVatDefaults($entity);
-            $this->due_date = Carbon::parse($this->issue_date)->addDays($entity->default_due_days)->toDateString();
         } else {
-            $this->vat_rate = (string) config('billing.default_vat_rate');
+            $this->vat_rate = (string) BillingDefaults::vatRate();
         }
         $this->addCustomItem();
 
@@ -132,12 +134,13 @@ class Form extends Component
         }
 
         $this->applyEntityVatDefaults($entity);
+        $this->currency = BillingDefaults::currency($entity);
 
         if (! $this->terms) {
             $this->terms = $entity->terms ?? '';
         }
         if ($this->issue_date) {
-            $this->due_date = Carbon::parse($this->issue_date)->addDays($entity->default_due_days)->toDateString();
+            $this->due_date = Carbon::parse($this->issue_date)->addDays(BillingDefaults::dueDays($entity))->toDateString();
         }
     }
 
@@ -154,7 +157,7 @@ class Form extends Component
     {
         if ($entity->vat_registered) {
             $this->vat_enabled = true;
-            $this->vat_rate = rtrim(rtrim(number_format((float) ($entity->default_vat_rate ?: config('billing.default_vat_rate', 20)), 2, '.', ''), '0'), '.') ?: '0';
+            $this->vat_rate = rtrim(rtrim(number_format(BillingDefaults::vatRate($entity), 2, '.', ''), '0'), '.') ?: '0';
             $this->vat_treatment = VatTreatment::Standard->value;
         } else {
             $this->vat_enabled = false;
@@ -383,7 +386,7 @@ class Form extends Component
             'clients' => Client::query()->orderBy('company')->get(),
             'services' => $services,
             'matchingServices' => $services->where('currency', $this->currency)->values(),
-            'currencies' => config('billing.currencies'),
+            'currencies' => CurrencyCatalog::all(),
             'treatments' => VatTreatment::cases(),
             'totals' => $totals,
             'title' => $this->invoiceId ? 'Edit invoice' : 'New invoice',

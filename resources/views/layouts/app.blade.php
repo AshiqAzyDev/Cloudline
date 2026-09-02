@@ -5,16 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{{ $title ?? 'Cloudline Billing' }}</title>
+    <x-app-favicon />
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     @livewireStyles
 </head>
 <body class="min-h-screen bg-canvas text-ink antialiased">
     <div class="flex min-h-screen">
         <aside class="sticky top-0 flex h-screen w-[176px] shrink-0 flex-col border-r border-line bg-white px-2 py-3">
-            <div class="mb-3 flex items-center gap-2 px-2">
-                <div class="flex h-6 w-6 items-center justify-center rounded-md bg-accent text-[11px] font-bold text-white">C</div>
-                <div class="font-display text-[13px] font-semibold tracking-tight">Cloudline</div>
-            </div>
+            <x-app-logo class="mb-3 px-2" />
             <nav class="flex flex-col gap-0.5">
                 @php
                     $item = function (string $route, string $label) {

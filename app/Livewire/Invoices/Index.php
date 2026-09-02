@@ -6,6 +6,7 @@ use App\Enums\InvoiceStatus;
 use App\Models\BillingEntity;
 use App\Models\Client;
 use App\Models\Invoice;
+use App\Support\CurrencyCatalog;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Attributes\Url;
@@ -57,7 +58,7 @@ class Index extends Component
             'clients' => Client::query()->orderBy('company')->get(),
             'entities' => BillingEntity::query()->orderBy('name')->get(),
             'statuses' => InvoiceStatus::cases(),
-            'currencies' => array_keys(config('billing.currencies')),
+            'currencies' => CurrencyCatalog::codes(),
         ]);
     }
 }

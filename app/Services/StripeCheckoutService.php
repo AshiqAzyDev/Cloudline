@@ -6,6 +6,7 @@ use App\Enums\InvoiceEventType;
 use App\Enums\InvoiceStatus;
 use App\Models\Invoice;
 use App\Models\StripeEvent;
+use App\Support\CurrencyCatalog;
 use Illuminate\Support\Facades\Log;
 use Stripe\Checkout\Session;
 use Stripe\Event;
@@ -147,12 +148,66 @@ class StripeCheckoutService
 
         match ($event->type) {
             'checkout.session.completed', 'checkout.session.async_payment_succeeded' => $this->handleCheckoutCompleted($event),
-            'checkout.session.async_payment_failed', 'payment_intent.payment_failed' => null,
+            'checkout.session.async_payment_failed' => $this->handleCheckoutFailed($event),
+            'payment_intent.payment_failed' => $this->handlePaymentIntentFailed($event),
             'charge.refunded' => $this->handleRefund($event),
             default => null,
         };
 
         $record->forceFill(['processed_at' => now(), 'type' => $event->type])->save();
+    }
+
+    public function settleCheckoutSession(Session $session): bool
+    {
+        $invoice = $this->invoiceFromSession($session);
+
+        if (! $invoice || $invoice->status === InvoiceStatus::Paid) {
+            return false;
+        }
+
+        if (! $this->sessionCanSettle($session, $invoice)) {
+            return false;
+        }
+
+        $this->applySessionPayment($session, $invoice);
+
+        return true;
+    }
+
+    public function sessionCanSettle(Session $session, Invoice $invoice): bool
+    {
+        if ($session->payment_status !== 'paid') {
+            Log::info('Stripe session not paid; skipping settlement', [
+                'invoice_id' => $invoice->id,
+                'payment_status' => $session->payment_status,
+            ]);
+
+            return false;
+        }
+
+        $sessionCurrency = strtoupper((string) ($session->currency ?? ''));
+        if ($sessionCurrency !== $invoice->currency) {
+            Log::warning('Stripe session currency mismatch', [
+                'invoice_id' => $invoice->id,
+                'expected' => $invoice->currency,
+                'actual' => $sessionCurrency,
+            ]);
+
+            return false;
+        }
+
+        $amount = (int) ($session->amount_total ?? 0);
+        if ($amount !== $invoice->outstandingMinor()) {
+            Log::warning('Stripe session amount mismatch', [
+                'invoice_id' => $invoice->id,
+                'expected' => $invoice->outstandingMinor(),
+                'actual' => $amount,
+            ]);
+
+            return false;
+        }
+
+        return true;
     }
 
     private function handleCheckoutCompleted(Event $event): void
@@ -165,20 +220,72 @@ class StripeCheckoutService
             return;
         }
 
+        if (! $this->sessionCanSettle($session, $invoice)) {
+            return;
+        }
+
+        $this->applySessionPayment($session, $invoice);
+    }
+
+    private function applySessionPayment(Session $session, Invoice $invoice): void
+    {
         $details = $this->paymentDetailsFromSession($session);
 
-        app(InvoiceService::class)->applyPayment($invoice, $details, InvoiceEventType::PaymentSucceeded);
+        $this->invoiceService()->applyPayment($invoice, $details, InvoiceEventType::PaymentSucceeded);
 
-        if ($invoice->currency !== 'GBP' && ($details['settlement_amount_minor'] ?? null) && ($details['settlement_currency'] ?? null) === 'gbp') {
+        $invoice->refresh();
+
+        if ($invoice->currency !== 'GBP' && ($details['settlement_amount_minor'] ?? null) && strtoupper((string) ($details['settlement_currency'] ?? '')) === 'GBP') {
             $invoice->forceFill([
                 'total_gbp_minor' => $details['settlement_amount_minor'],
+                'fx_rate_to_gbp' => $invoice->total_minor > 0
+                    ? round($details['settlement_amount_minor'] / $invoice->total_minor, 6)
+                    : null,
                 'stripe_payment_intent_id' => $details['stripe_payment_intent_id'] ?? $invoice->stripe_payment_intent_id,
             ])->save();
         } else {
             $invoice->forceFill([
                 'stripe_payment_intent_id' => $details['stripe_payment_intent_id'] ?? $invoice->stripe_payment_intent_id,
             ])->save();
+            $this->invoiceService()->syncIndicativeGbp($invoice->fresh());
         }
+    }
+
+    private function handleCheckoutFailed(Event $event): void
+    {
+        /** @var Session $session */
+        $session = $event->data->object;
+        $invoice = $this->invoiceFromSession($session);
+
+        if (! $invoice) {
+            return;
+        }
+
+        $invoice->recordEvent(InvoiceEventType::PaymentFailed, [
+            'source' => 'checkout.session.async_payment_failed',
+            'session_id' => $session->id ?? null,
+        ]);
+    }
+
+    private function handlePaymentIntentFailed(Event $event): void
+    {
+        $intent = $event->data->object;
+        $intentId = is_object($intent) ? ($intent->id ?? null) : $intent;
+
+        if (! $intentId) {
+            return;
+        }
+
+        $invoice = Invoice::query()->where('stripe_payment_intent_id', $intentId)->first();
+
+        if (! $invoice) {
+            return;
+        }
+
+        $invoice->recordEvent(InvoiceEventType::PaymentFailed, [
+            'source' => 'payment_intent.payment_failed',
+            'payment_intent_id' => $intentId,
+        ]);
     }
 
     private function handleRefund(Event $event): void
@@ -200,23 +307,12 @@ class StripeCheckoutService
         $refunded = (int) ($charge->amount_refunded ?? 0);
         $fullyRefunded = $amount > 0 && $refunded >= $amount;
 
-        if ($fullyRefunded) {
-            $invoice->status = InvoiceStatus::Refunded;
-            $invoice->save();
-            $invoice->recordEvent(InvoiceEventType::Refunded, [
-                'charge' => $charge->id ?? null,
-                'amount_refunded' => $refunded,
-            ]);
+        $this->invoiceService()->applyRefund($invoice, $refunded, $fullyRefunded, $charge->id ?? null);
+    }
 
-            return;
-        }
-
-        $invoice->recordEvent(InvoiceEventType::Refunded, [
-            'charge' => $charge->id ?? null,
-            'partial' => true,
-            'amount_refunded' => $refunded,
-            'amount' => $amount,
-        ]);
+    private function invoiceService(): InvoiceService
+    {
+        return app(InvoiceService::class);
     }
 
     private function invoiceFromSession(Session $session): ?Invoice
@@ -247,7 +343,9 @@ class StripeCheckoutService
             'currency' => strtoupper((string) ($session->currency ?? 'gbp')),
             'fee_minor' => $fee,
             'net_minor' => $net,
-            'settlement_currency' => is_object($balance) ? $balance->currency : null,
+            'settlement_currency' => is_object($balance) && $balance->currency
+                ? strtoupper((string) $balance->currency)
+                : null,
             'settlement_amount_minor' => is_object($balance) ? (int) $balance->amount : null,
             'method' => 'stripe',
             'received_at' => now(),
@@ -261,6 +359,6 @@ class StripeCheckoutService
 
     public function isBankOnlyCurrency(string $currency): bool
     {
-        return in_array(strtoupper($currency), config('billing.bank_only_currencies', ['INR']), true);
+        return CurrencyCatalog::isBankOnly($currency);
     }
 }

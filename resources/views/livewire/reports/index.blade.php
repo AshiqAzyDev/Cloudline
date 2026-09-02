@@ -81,8 +81,8 @@
     </div>
 
     <div class="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-        <x-stat-card label="GBP invoiced" :value="$gbpInvoiced" />
-        <x-stat-card label="GBP received" :value="$gbpReceived" color="#15803D" />
+        <x-stat-card label="Indicative GBP invoiced" :value="$gbpInvoiced" hint="Config FX rates; settlement may differ" />
+        <x-stat-card label="GBP received" :value="$gbpReceived" color="#15803D" hint="Stripe settlement & GBP payments" />
         <x-stat-card label="Invoices" :value="$resultCount" />
         <x-stat-card label="Period" :value="$data['label']" />
     </div>
@@ -104,11 +104,15 @@
             </thead>
             <tbody>
                 @forelse ($data['invoice_rows'] as $row)
-                    <tr class="is-link" onclick="window.location='{{ route('invoices.show', $row['id']) }}'">
-                        <td class="muted num">{{ $row['number'] }}</td>
-                        <td class="strong truncate">{{ $row['client'] }}</td>
+                    <tr>
+                        <td class="muted num">
+                            <a href="{{ route('invoices.show', $row['id']) }}" class="table-row-link">{{ $row['number'] }}</a>
+                        </td>
+                        <td class="strong truncate">
+                            <a href="{{ route('invoices.show', $row['id']) }}" class="table-row-link">{{ $row['client'] }}</a>
+                        </td>
                         <td class="muted truncate">{{ $row['entity'] }}</td>
-                        <td>{{ $row['status'] }}</td>
+                        <td><x-status-pill :status="\App\Enums\InvoiceStatus::from($row['status_value'])" /></td>
                         <td class="muted">{{ $row['issue_date'] }}</td>
                         <td class="muted">{{ $row['due_date'] }}</td>
                         <td class="strong num right">{{ $row['total_fmt'] }}</td>
@@ -121,6 +125,11 @@
                 @endforelse
             </tbody>
         </table>
+        @if ($resultCount > $data['invoice_per_page'])
+            <div class="border-t border-line px-3 py-2">
+                {{ $invoicePaginator->links() }}
+            </div>
+        @endif
     </div>
 
     <div class="card mb-3 overflow-x-auto">

@@ -2,10 +2,10 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Invoice;
 use App\Services\ReportService;
 use App\Support\FinancialYear;
 use App\Support\Money;
+use App\Support\Permissions;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -13,7 +13,7 @@ class ReportExportController extends Controller
 {
     public function __invoke(Request $request, ReportService $reports): StreamedResponse
     {
-        $this->authorize('viewAny', Invoice::class);
+        abort_unless(auth()->user()->can(Permissions::REPORTS_VIEW), 403);
 
         $filters = [
             'fy' => (int) $request->integer('fy', FinancialYear::startFor(now())->year),
@@ -37,7 +37,7 @@ class ReportExportController extends Controller
             fputcsv($out, ['Cloudline filtered report']);
             fputcsv($out, ['Period', $data['label']]);
             fputcsv($out, ['Net of fees', $data['net_of_fees'] ? 'Yes' : 'No']);
-            fputcsv($out, ['Invoice count', count($data['invoice_rows'])]);
+            fputcsv($out, ['Invoice count', $data['invoice_total']]);
             fputcsv($out, []);
 
             fputcsv($out, ['Invoices']);

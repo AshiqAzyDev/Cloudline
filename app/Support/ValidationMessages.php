@@ -89,6 +89,6 @@ class ValidationMessages
      */
     public static function currencyRule(): array
     {
-        return ['required', 'string', 'size:3', Rule::in(array_keys(config('billing.currencies', [])))];
+        return ['required', 'string', 'size:3', Rule::in(CurrencyCatalog::codes())];
     }
 }
