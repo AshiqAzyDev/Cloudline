@@ -19,74 +19,171 @@
     <x-error-summary />
 
     @if ($tab === 'entities')
-        @foreach ($entities as $i => $entity)
-            <div class="card card-pad mb-3" wire:key="entity-{{ $entity['id'] }}">
-                <div class="section-label">{{ $entity['name'] }}</div>
-                <div class="grid grid-cols-2 gap-3">
-                    <div><label class="field-label">Name</label><input wire:model="entities.{{ $i }}.name" class="field"></div>
-                    <div><label class="field-label">Legal name</label><input wire:model="entities.{{ $i }}.legal_name" class="field"></div>
-                    <div><label class="field-label">Email</label><input wire:model="entities.{{ $i }}.email" class="field"></div>
-                    <div><label class="field-label">VAT number</label><input wire:model="entities.{{ $i }}.vat_number" class="field"></div>
-                    <div><label class="field-label">Prefix</label><input wire:model="entities.{{ $i }}.invoice_prefix" class="field"></div>
-                    <div><label class="field-label">Default VAT %</label><input wire:model="entities.{{ $i }}.default_vat_rate" class="field"></div>
-                    <div class="col-span-2 flex flex-wrap gap-4">
-                        <label class="flex items-center gap-2 text-sm"><input type="checkbox" wire:model="entities.{{ $i }}.vat_registered"> VAT registered</label>
-                        <label class="flex items-center gap-2 text-sm"><input type="checkbox" wire:model="entities.{{ $i }}.is_active"> Active</label>
+        @if ($showCreateEntity)
+            <div class="mb-3">
+                <button type="button" wire:click="closeEntityForm" class="btn btn-ghost">← All entities</button>
+            </div>
+            <div class="card card-pad">
+                <div class="section-label">Add entity</div>
+                <p class="mb-3 text-[12.5px] text-subtle">Each entity gets its own invoice prefix, VAT defaults, and bank details.</p>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <input wire:model="newEntity.name" placeholder="Name" class="field">
+                    <input wire:model="newEntity.legal_name" placeholder="Legal name" class="field">
+                    <input wire:model="newEntity.email" placeholder="Email" class="field">
+                    <input wire:model="newEntity.invoice_prefix" placeholder="Prefix (e.g. BMGA)" class="field">
+                    <input wire:model="newEntity.vat_number" placeholder="VAT number (optional)" class="field">
+                    <select wire:model="newEntity.default_currency" class="field">
+                        @foreach ($currencies as $code => $meta)
+                            <option value="{{ $code }}">{{ $code }}</option>
+                        @endforeach
+                    </select>
+                    <label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" wire:model="newEntity.vat_registered"> VAT registered (new invoices default to Include VAT on)</label>
+                </div>
+                @error('newEntity.invoice_prefix') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
+                @error('newEntity.name') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
+                @error('newEntity.legal_name') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
+                @error('newEntity.email') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
+                <div class="mt-3 flex flex-wrap gap-2">
+                    <button wire:click="addEntity" class="btn btn-primary">Create entity</button>
+                    <button type="button" wire:click="closeEntityForm" class="btn btn-ghost">Cancel</button>
+                </div>
+            </div>
+        @elseif ($editingEntityId)
+            <div class="card card-pad" wire:key="entity-{{ $editingEntityId }}">
+                <div class="mb-3 flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                        <button type="button" wire:click="closeEntityForm" class="btn btn-ghost mb-2">← All entities</button>
+                        <div class="text-[15px] font-semibold tracking-tight">{{ $entityForm['name'] }}</div>
+                        <div class="text-[12px] text-muted">{{ $entityForm['legal_name'] }}</div>
+                    </div>
+                    <button wire:click="saveEntity" class="btn btn-primary">Save entity</button>
+                </div>
+
+                <div class="section-label">Identity</div>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div><label class="field-label">Name</label><input wire:model="entityForm.name" class="field"></div>
+                    <div><label class="field-label">Legal name</label><input wire:model="entityForm.legal_name" class="field"></div>
+                    <div><label class="field-label">Email</label><input wire:model="entityForm.email" class="field"></div>
+                    <div><label class="field-label">Invoice prefix</label><input wire:model="entityForm.invoice_prefix" class="field"></div>
+                    <div>
+                        <label class="field-label">Default currency</label>
+                        <select wire:model="entityForm.default_currency" class="field">
+                            @foreach ($currencies as $code => $meta)
+                                <option value="{{ $code }}">{{ $code }}</option>
+                            @endforeach
+                        </select>
+                    </div>
+                    <div><label class="field-label">Default due days</label><input wire:model="entityForm.default_due_days" type="number" class="field"></div>
+                    <div class="flex flex-wrap gap-4 sm:col-span-2">
+                        <label class="flex items-center gap-2 text-sm"><input type="checkbox" wire:model="entityForm.is_active"> Active</label>
+                    </div>
+                </div>
+
+                <div class="mt-4 border-t border-line pt-3">
+                    <div class="section-label">VAT</div>
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div><label class="field-label">VAT number</label><input wire:model="entityForm.vat_number" class="field"></div>
+                        <div><label class="field-label">Default VAT %</label><input wire:model="entityForm.default_vat_rate" class="field"></div>
+                        <label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" wire:model="entityForm.vat_registered"> VAT registered</label>
                     </div>
                 </div>
 
                 <div class="mt-4 border-t border-line pt-3">
                     <div class="section-label">Address</div>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div class="col-span-2"><label class="field-label">Address line 1</label><input wire:model="entities.{{ $i }}.address_line1" class="field" placeholder="Street address"></div>
-                        <div class="col-span-2"><label class="field-label">Address line 2</label><input wire:model="entities.{{ $i }}.address_line2" class="field" placeholder="Building, floor (optional)"></div>
-                        <div><label class="field-label">City</label><input wire:model="entities.{{ $i }}.city" class="field"></div>
-                        <div><label class="field-label">Postcode</label><input wire:model="entities.{{ $i }}.postcode" class="field"></div>
-                        <div class="col-span-2"><label class="field-label">Country</label><input wire:model="entities.{{ $i }}.country" class="field" placeholder="United Kingdom"></div>
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div class="sm:col-span-2"><label class="field-label">Address line 1</label><input wire:model="entityForm.address_line1" class="field" placeholder="Street address"></div>
+                        <div class="sm:col-span-2"><label class="field-label">Address line 2</label><input wire:model="entityForm.address_line2" class="field" placeholder="Building, floor (optional)"></div>
+                        <div><label class="field-label">City</label><input wire:model="entityForm.city" class="field"></div>
+                        <div><label class="field-label">Postcode</label><input wire:model="entityForm.postcode" class="field"></div>
+                        <div class="sm:col-span-2"><label class="field-label">Country</label><input wire:model="entityForm.country" class="field" placeholder="United Kingdom"></div>
                     </div>
                 </div>
 
                 <div class="mt-4 border-t border-line pt-3">
                     <div class="section-label">Bank details</div>
                     <p class="mb-2 text-[11.5px] text-subtle">Shown on the invoice PDF and payment page for bank transfers.</p>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div><label class="field-label">Bank name</label><input wire:model="entities.{{ $i }}.bank_name" class="field"></div>
-                        <div><label class="field-label">Account name</label><input wire:model="entities.{{ $i }}.account_name" class="field"></div>
-                        <div><label class="field-label">Sort code</label><input wire:model="entities.{{ $i }}.sort_code" class="field" placeholder="00-00-00"></div>
-                        <div><label class="field-label">Account number</label><input wire:model="entities.{{ $i }}.account_number" class="field"></div>
-                        <div><label class="field-label">IBAN</label><input wire:model="entities.{{ $i }}.iban" class="field"></div>
-                        <div><label class="field-label">BIC / SWIFT</label><input wire:model="entities.{{ $i }}.bic" class="field"></div>
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div><label class="field-label">Bank name</label><input wire:model="entityForm.bank_name" class="field"></div>
+                        <div><label class="field-label">Account name</label><input wire:model="entityForm.account_name" class="field"></div>
+                        <div><label class="field-label">Sort code</label><input wire:model="entityForm.sort_code" class="field" placeholder="00-00-00"></div>
+                        <div><label class="field-label">Account number</label><input wire:model="entityForm.account_number" class="field"></div>
+                        <div><label class="field-label">IBAN</label><input wire:model="entityForm.iban" class="field"></div>
+                        <div><label class="field-label">BIC / SWIFT</label><input wire:model="entityForm.bic" class="field"></div>
                     </div>
                 </div>
 
                 <div class="mt-4 border-t border-line pt-3">
                     <label class="field-label">Terms</label>
-                    <textarea wire:model="entities.{{ $i }}.terms" rows="2" class="field !min-h-0"></textarea>
+                    <textarea wire:model="entityForm.terms" rows="2" class="field !min-h-0"></textarea>
+                </div>
+
+                <div class="mt-4">
+                    <button wire:click="saveEntity" class="btn btn-primary">Save entity</button>
                 </div>
             </div>
-        @endforeach
-        <button wire:click="saveEntities" class="btn btn-primary">Save entities</button>
-
-        <div class="card card-pad mt-3">
-            <div class="section-label">Add entity</div>
-            <p class="mb-3 text-[12.5px] text-subtle">Use this for future brands (e.g. BMGA, Chords &amp; Keys). Each entity gets its own invoice prefix and VAT defaults.</p>
-            <div class="grid grid-cols-2 gap-3">
-                <input wire:model="newEntity.name" placeholder="Name" class="field">
-                <input wire:model="newEntity.legal_name" placeholder="Legal name" class="field">
-                <input wire:model="newEntity.email" placeholder="Email" class="field">
-                <input wire:model="newEntity.invoice_prefix" placeholder="Prefix (e.g. BMGA)" class="field">
-                <input wire:model="newEntity.vat_number" placeholder="VAT number (optional)" class="field">
-                <select wire:model="newEntity.default_currency" class="field">
-                    @foreach ($currencies as $code => $meta)
-                        <option value="{{ $code }}">{{ $code }}</option>
-                    @endforeach
-                </select>
-                <label class="col-span-2 flex items-center gap-2 text-sm"><input type="checkbox" wire:model="newEntity.vat_registered"> VAT registered (new invoices default to Include VAT on)</label>
+        @else
+            <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <input wire:model.live.debounce.300ms="entitySearch" placeholder="Search name, prefix, or email" class="field max-w-sm">
+                <div class="flex flex-wrap gap-2">
+                    <select wire:model.live="entityStatus" class="field w-36">
+                        <option value="">All statuses</option>
+                        <option value="active">Active</option>
+                        <option value="inactive">Inactive</option>
+                    </select>
+                    <button type="button" wire:click="startCreateEntity" class="btn btn-primary">+ Add entity</button>
+                </div>
             </div>
-            @error('newEntity.invoice_prefix') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
-            @error('newEntity.name') <p class="mt-2 text-sm text-red-600">{{ $message }}</p> @enderror
-            <button wire:click="addEntity" class="btn btn-primary mt-3">Create entity</button>
-        </div>
+            <div class="card overflow-x-auto">
+                <table class="data-table">
+                    <colgroup>
+                        <col>
+                        <col style="width: 7rem">
+                        <col>
+                        <col style="width: 4.5rem">
+                        <col style="width: 4.5rem">
+                        <col style="width: 5.5rem">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th>Entity</th>
+                            <th>Prefix</th>
+                            <th>Email</th>
+                            <th>Currency</th>
+                            <th>VAT</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @forelse ($entityRows as $entity)
+                            <tr class="is-link" wire:key="entity-row-{{ $entity->id }}" wire:click="editEntity({{ $entity->id }})">
+                                <td>
+                                    <div class="strong truncate">{{ $entity->name }}</div>
+                                    <div class="subtle truncate">{{ $entity->legal_name }}</div>
+                                </td>
+                                <td class="muted">{{ $entity->invoice_prefix }}</td>
+                                <td class="muted truncate">{{ $entity->email }}</td>
+                                <td>{{ $entity->default_currency }}</td>
+                                <td class="muted">{{ $entity->vat_registered ? 'Yes' : 'No' }}</td>
+                                <td>
+                                    @if ($entity->is_active)
+                                        <span class="text-[11px] font-semibold text-accent">Active</span>
+                                    @else
+                                        <span class="text-[11px] font-semibold text-red-700">Inactive</span>
+                                    @endif
+                                </td>
+                            </tr>
+                        @empty
+                            <tr>
+                                <td colspan="6" class="data-table-empty">{{ $entitySearch !== '' || $entityStatus !== '' ? 'No entities match those filters.' : 'No entities yet.' }}</td>
+                            </tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+            @if ($entityRows)
+                <div class="mt-3">{{ $entityRows->links() }}</div>
+            @endif
+        @endif
     @endif
 
     @if ($tab === 'users')

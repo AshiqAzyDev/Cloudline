@@ -11,6 +11,7 @@ use App\Support\Branding;
 use App\Support\CurrencyCatalog;
 use App\Support\Permissions;
 use App\Support\ValidationMessages;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Layout;
@@ -19,6 +20,7 @@ use Livewire\Attributes\Url;
 use Livewire\Component;
 use Livewire\Features\SupportFileUploads\TemporaryUploadedFile;
 use Livewire\WithFileUploads;
+use Livewire\WithPagination;
 use Spatie\Permission\Models\Role;
 
 #[Layout('layouts.app')]
@@ -26,11 +28,23 @@ use Spatie\Permission\Models\Role;
 class Index extends Component
 {
     use WithFileUploads;
+    use WithPagination;
 
     #[Url]
     public string $tab = 'entities';
 
-    public array $entities = [];
+    /** @var array<string, mixed> */
+    public array $entityForm = [];
+
+    public ?int $editingEntityId = null;
+
+    public bool $showCreateEntity = false;
+
+    #[Url]
+    public string $entitySearch = '';
+
+    #[Url]
+    public string $entityStatus = '';
 
     public array $users = [];
 
@@ -81,32 +95,6 @@ class Index extends Component
 
     public function loadState(): void
     {
-        $this->entities = BillingEntity::query()->get()->map(fn (BillingEntity $entity) => [
-            'id' => $entity->id,
-            'name' => $entity->name,
-            'legal_name' => $entity->legal_name,
-            'address_line1' => $entity->address_line1 ?? '',
-            'address_line2' => $entity->address_line2 ?? '',
-            'city' => $entity->city ?? '',
-            'postcode' => $entity->postcode ?? '',
-            'country' => $entity->country ?? '',
-            'email' => $entity->email,
-            'vat_number' => $entity->vat_number,
-            'vat_registered' => $entity->vat_registered,
-            'invoice_prefix' => $entity->invoice_prefix,
-            'default_currency' => $entity->default_currency,
-            'default_vat_rate' => (string) $entity->default_vat_rate,
-            'default_due_days' => (string) $entity->default_due_days,
-            'bank_name' => $entity->bank_name ?? '',
-            'account_name' => $entity->account_name ?? '',
-            'sort_code' => $entity->sort_code ?? '',
-            'account_number' => $entity->account_number ?? '',
-            'iban' => $entity->iban ?? '',
-            'bic' => $entity->bic ?? '',
-            'terms' => $entity->terms,
-            'is_active' => $entity->is_active,
-        ])->all();
-
         $this->users = User::query()->with('roles')->whereNull('client_id')->get()->map(fn (User $user) => [
             'id' => $user->id,
             'name' => $user->name,
@@ -118,16 +106,6 @@ class Index extends Component
         $staff = Role::findByName('staff');
         $this->staffPermissions = $staff->permissions->pluck('name')->all();
 
-        $this->reminderRules = BillingEntity::query()->with('reminderRules')->get()->map(fn (BillingEntity $entity) => [
-            'entity_id' => $entity->id,
-            'name' => $entity->name,
-            'rules' => $entity->reminderRules->map(fn ($rule) => [
-                'id' => $rule->id,
-                'offset_days' => (string) $rule->offset_days,
-                'is_active' => $rule->is_active,
-            ])->all(),
-        ])->all();
-
         $this->default_vat_rate = (string) Setting::getValue('default_vat_rate', config('billing.default_vat_rate'));
         $this->default_currency = (string) Setting::getValue('default_currency', config('billing.default_currency'));
         $this->default_due_days = (string) Setting::getValue('default_due_days', config('billing.default_due_days'));
@@ -138,75 +116,118 @@ class Index extends Component
         $this->currencyRows = CurrencyCatalog::rows();
     }
 
-    public function saveEntities(): void
+    public function updatedEntitySearch(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedEntityStatus(): void
+    {
+        $this->resetPage();
+    }
+
+    public function saveEntity(): void
     {
         abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
 
-        $this->validate([
-            'entities' => 'required|array|min:1',
-            'entities.*.name' => 'required|string|max:255',
-            'entities.*.legal_name' => 'required|string|max:255',
-            'entities.*.email' => 'required|email|max:255',
-            'entities.*.vat_number' => 'nullable|string|max:50',
-            'entities.*.vat_registered' => 'boolean',
-            'entities.*.invoice_prefix' => 'required|string|max:10',
-            'entities.*.default_vat_rate' => 'required|numeric|min:0|max:100',
-            'entities.*.default_due_days' => 'required|integer|min:0|max:365',
-            'entities.*.default_currency' => ValidationMessages::currencyRule(),
-            'entities.*.address_line1' => 'nullable|string|max:255',
-            'entities.*.address_line2' => 'nullable|string|max:255',
-            'entities.*.city' => 'nullable|string|max:255',
-            'entities.*.postcode' => 'nullable|string|max:32',
-            'entities.*.country' => 'nullable|string|max:255',
-            'entities.*.bank_name' => 'nullable|string|max:255',
-            'entities.*.account_name' => 'nullable|string|max:255',
-            'entities.*.sort_code' => 'nullable|string|max:32',
-            'entities.*.account_number' => 'nullable|string|max:64',
-            'entities.*.iban' => 'nullable|string|max:64',
-            'entities.*.bic' => 'nullable|string|max:32',
-            'entities.*.terms' => 'nullable|string|max:5000',
-            'entities.*.is_active' => 'boolean',
-        ], [
-            'entities.*.name.required' => 'Each entity needs a name.',
-            'entities.*.legal_name.required' => 'Each entity needs a legal name.',
-            'entities.*.email.required' => 'Each entity needs an email.',
-            'entities.*.invoice_prefix.required' => 'Each entity needs an invoice prefix.',
-        ]);
-
-        foreach ($this->entities as $row) {
-            $structured = [
-                'address_line1' => $row['address_line1'] ?: null,
-                'address_line2' => $row['address_line2'] ?: null,
-                'city' => $row['city'] ?: null,
-                'postcode' => $row['postcode'] ?: null,
-                'country' => $row['country'] ?: null,
-                'bank_name' => $row['bank_name'] ?: null,
-                'account_name' => $row['account_name'] ?: null,
-                'sort_code' => $row['sort_code'] ?: null,
-                'account_number' => $row['account_number'] ?: null,
-                'iban' => $row['iban'] ?: null,
-                'bic' => $row['bic'] ?: null,
-            ];
-            $composed = BillingEntity::composeLegacyDetails($structured);
-
-            BillingEntity::query()->findOrFail($row['id'])->update([
-                'name' => $row['name'],
-                'legal_name' => $row['legal_name'],
-                'email' => $row['email'],
-                'vat_number' => $row['vat_number'],
-                'vat_registered' => (bool) $row['vat_registered'],
-                'invoice_prefix' => $row['invoice_prefix'],
-                'default_currency' => $row['default_currency'],
-                'default_vat_rate' => $row['default_vat_rate'],
-                'default_due_days' => $row['default_due_days'],
-                'terms' => $row['terms'],
-                'is_active' => (bool) ($row['is_active'] ?? true),
-                ...$structured,
-                ...$composed,
-            ]);
+        if ($this->editingEntityId === null) {
+            return;
         }
 
-        session()->flash('success', 'Entities saved.');
+        $this->validate([
+            'entityForm.name' => 'required|string|max:255',
+            'entityForm.legal_name' => 'required|string|max:255',
+            'entityForm.email' => 'required|email|max:255',
+            'entityForm.vat_number' => 'nullable|string|max:50',
+            'entityForm.vat_registered' => 'boolean',
+            'entityForm.invoice_prefix' => 'required|string|max:10',
+            'entityForm.default_vat_rate' => 'required|numeric|min:0|max:100',
+            'entityForm.default_due_days' => 'required|integer|min:0|max:365',
+            'entityForm.default_currency' => ValidationMessages::currencyRule(),
+            'entityForm.address_line1' => 'nullable|string|max:255',
+            'entityForm.address_line2' => 'nullable|string|max:255',
+            'entityForm.city' => 'nullable|string|max:255',
+            'entityForm.postcode' => 'nullable|string|max:32',
+            'entityForm.country' => 'nullable|string|max:255',
+            'entityForm.bank_name' => 'nullable|string|max:255',
+            'entityForm.account_name' => 'nullable|string|max:255',
+            'entityForm.sort_code' => 'nullable|string|max:32',
+            'entityForm.account_number' => 'nullable|string|max:64',
+            'entityForm.iban' => 'nullable|string|max:64',
+            'entityForm.bic' => 'nullable|string|max:32',
+            'entityForm.terms' => 'nullable|string|max:5000',
+            'entityForm.is_active' => 'boolean',
+        ], [
+            'entityForm.name.required' => 'Each entity needs a name.',
+            'entityForm.legal_name.required' => 'Each entity needs a legal name.',
+            'entityForm.email.required' => 'Each entity needs an email.',
+            'entityForm.invoice_prefix.required' => 'Each entity needs an invoice prefix.',
+        ]);
+
+        $row = $this->entityForm;
+        $structured = [
+            'address_line1' => $row['address_line1'] ?: null,
+            'address_line2' => $row['address_line2'] ?: null,
+            'city' => $row['city'] ?: null,
+            'postcode' => $row['postcode'] ?: null,
+            'country' => $row['country'] ?: null,
+            'bank_name' => $row['bank_name'] ?: null,
+            'account_name' => $row['account_name'] ?: null,
+            'sort_code' => $row['sort_code'] ?: null,
+            'account_number' => $row['account_number'] ?: null,
+            'iban' => $row['iban'] ?: null,
+            'bic' => $row['bic'] ?: null,
+        ];
+        $composed = BillingEntity::composeLegacyDetails($structured);
+
+        BillingEntity::query()->findOrFail($this->editingEntityId)->update([
+            'name' => $row['name'],
+            'legal_name' => $row['legal_name'],
+            'email' => $row['email'],
+            'vat_number' => $row['vat_number'],
+            'vat_registered' => (bool) $row['vat_registered'],
+            'invoice_prefix' => $row['invoice_prefix'],
+            'default_currency' => $row['default_currency'],
+            'default_vat_rate' => $row['default_vat_rate'],
+            'default_due_days' => $row['default_due_days'],
+            'terms' => $row['terms'],
+            'is_active' => (bool) ($row['is_active'] ?? true),
+            ...$structured,
+            ...$composed,
+        ]);
+
+        session()->flash('success', 'Entity saved.');
+    }
+
+    public function editEntity(int $id): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        $entity = BillingEntity::query()->findOrFail($id);
+        $this->entityForm = $this->entityFormFromModel($entity);
+        $this->editingEntityId = $entity->id;
+        $this->showCreateEntity = false;
+        $this->resetErrorBag();
+    }
+
+    public function startCreateEntity(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        $this->showCreateEntity = true;
+        $this->editingEntityId = null;
+        $this->entityForm = [];
+        $this->resetErrorBag('newEntity');
+    }
+
+    public function closeEntityForm(): void
+    {
+        abort_unless(auth()->user()->can(Permissions::SETTINGS_MANAGE), 403);
+
+        $this->showCreateEntity = false;
+        $this->editingEntityId = null;
+        $this->entityForm = [];
+        $this->resetErrorBag();
     }
 
     public function addEntity(): void
@@ -231,7 +252,7 @@ class Index extends Component
         $prefix = strtoupper($this->newEntity['invoice_prefix']);
         $vatRegistered = (bool) $this->newEntity['vat_registered'];
 
-        BillingEntity::query()->create([
+        $entity = BillingEntity::query()->create([
             'name' => $this->newEntity['name'],
             'legal_name' => $this->newEntity['legal_name'],
             'slug' => Str::slug($this->newEntity['name']).'-'.Str::lower(Str::random(4)),
@@ -257,7 +278,12 @@ class Index extends Component
             'vat_registered' => true,
             'default_currency' => 'GBP',
         ];
-        $this->loadState();
+        $this->showCreateEntity = false;
+        $this->entitySearch = '';
+        $this->entityStatus = '';
+        $this->resetPage();
+        $this->entityForm = $this->entityFormFromModel($entity);
+        $this->editingEntityId = $entity->id;
         session()->flash('success', 'Entity created.');
     }
 
@@ -710,6 +736,10 @@ class Index extends Component
             $this->tab = 'users';
         }
 
+        if ($this->tab === 'reminders' && $this->reminderRules === []) {
+            $this->loadReminderRules();
+        }
+
         return view('livewire.settings.index', [
             'permissions' => Permissions::labels(),
             'stripeConfigured' => $stripe->isConfigured(),
@@ -722,6 +752,87 @@ class Index extends Component
             'faviconUrl' => Branding::faviconUrl(),
             'canSettings' => $canSettings,
             'canUsers' => $canUsers,
+            'entityRows' => $this->entityList(),
         ]);
+    }
+
+    /**
+     * @return LengthAwarePaginator<int, BillingEntity>|null
+     */
+    private function entityList(): ?LengthAwarePaginator
+    {
+        if ($this->tab !== 'entities' || $this->showCreateEntity || $this->editingEntityId !== null) {
+            return null;
+        }
+
+        return BillingEntity::query()
+            ->select([
+                'id',
+                'name',
+                'legal_name',
+                'email',
+                'invoice_prefix',
+                'default_currency',
+                'vat_registered',
+                'is_active',
+            ])
+            ->when(trim($this->entitySearch) !== '', function ($query) {
+                $term = '%'.trim($this->entitySearch).'%';
+                $query->where(function ($inner) use ($term) {
+                    $inner->where('name', 'like', $term)
+                        ->orWhere('legal_name', 'like', $term)
+                        ->orWhere('email', 'like', $term)
+                        ->orWhere('invoice_prefix', 'like', $term);
+                });
+            })
+            ->when($this->entityStatus === 'active', fn ($query) => $query->where('is_active', true))
+            ->when($this->entityStatus === 'inactive', fn ($query) => $query->where('is_active', false))
+            ->orderBy('name')
+            ->paginate(20);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function entityFormFromModel(BillingEntity $entity): array
+    {
+        return [
+            'id' => $entity->id,
+            'name' => $entity->name,
+            'legal_name' => $entity->legal_name,
+            'address_line1' => $entity->address_line1 ?? '',
+            'address_line2' => $entity->address_line2 ?? '',
+            'city' => $entity->city ?? '',
+            'postcode' => $entity->postcode ?? '',
+            'country' => $entity->country ?? '',
+            'email' => $entity->email,
+            'vat_number' => $entity->vat_number,
+            'vat_registered' => $entity->vat_registered,
+            'invoice_prefix' => $entity->invoice_prefix,
+            'default_currency' => $entity->default_currency,
+            'default_vat_rate' => (string) $entity->default_vat_rate,
+            'default_due_days' => (string) $entity->default_due_days,
+            'bank_name' => $entity->bank_name ?? '',
+            'account_name' => $entity->account_name ?? '',
+            'sort_code' => $entity->sort_code ?? '',
+            'account_number' => $entity->account_number ?? '',
+            'iban' => $entity->iban ?? '',
+            'bic' => $entity->bic ?? '',
+            'terms' => $entity->terms,
+            'is_active' => $entity->is_active,
+        ];
+    }
+
+    private function loadReminderRules(): void
+    {
+        $this->reminderRules = BillingEntity::query()->with('reminderRules')->orderBy('name')->get()->map(fn (BillingEntity $entity) => [
+            'entity_id' => $entity->id,
+            'name' => $entity->name,
+            'rules' => $entity->reminderRules->map(fn ($rule) => [
+                'id' => $rule->id,
+                'offset_days' => (string) $rule->offset_days,
+                'is_active' => $rule->is_active,
+            ])->all(),
+        ])->all();
     }
 }

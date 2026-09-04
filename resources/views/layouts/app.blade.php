@@ -12,7 +12,12 @@
 <body class="min-h-screen bg-canvas text-ink antialiased">
     <div class="flex min-h-screen">
         <aside class="sticky top-0 flex h-screen w-[176px] shrink-0 flex-col border-r border-line bg-white px-2 py-3">
-            <x-app-logo class="mb-3 px-2" />
+            <x-app-logo
+                class="mb-3 px-2"
+                imgClass="h-10 max-w-[152px] object-contain object-left"
+                markClass="flex h-9 w-9 items-center justify-center rounded-md bg-accent text-[14px] font-bold text-white"
+                textClass="font-display text-[17px] font-semibold tracking-tight"
+            />
             <nav class="flex flex-col gap-0.5">
                 @php
                     $item = function (string $route, string $label) {
